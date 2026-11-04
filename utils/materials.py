@@ -14,6 +14,13 @@ import numpy as np
 from .. import globs
 from ..type_annotations import Diffuse, MatDict, MatDictItem
 from .images import get_image, get_packed_file
+from .node_compat import (
+    find_node,
+    get_input,
+    get_output,
+    matches_socket_name,
+    node_exists,
+)
 from .textures import get_texture
 
 # Color space conversion constants (sRGB)
@@ -91,22 +98,36 @@ COLOR_INPUT_NAMES = frozenset(
     ["Color", "Base Color", "Diffuse Color", "BaseColor"]
 )
 
+def _node_input_value(nodes, node_name: str, socket_name: str):
+    """Read a node input default value using localized-safe lookup."""
+    socket = get_input(find_node(nodes, node_name), socket_name)
+    return socket.default_value
+
+
+def _node_output_value(nodes, node_name: str, socket_name: str):
+    """Read a node output default value using localized-safe lookup."""
+    socket = get_output(find_node(nodes, node_name), socket_name)
+    return socket.default_value
+
+
 # Diffuse color accessors for color-only shaders
 DIFFUSE_ACCESSORS = {
-    "mmdCol": lambda n: n[MMD_SHADER_NODE]
-    .inputs["Diffuse Color"]
-    .default_value,
-    "mtoonCol": lambda n: n["Mtoon1PbrMetallicRoughness.BaseColorFactor"].color,
-    "vrm": lambda n: n["RGB"].outputs[0].default_value,
-    "vrmCol": lambda n: n["Group"].inputs[10].default_value,
-    "diffuseCol": lambda n: n["Diffuse BSDF"].inputs["Color"].default_value,
-    "xnalaraNewCol": lambda n: n["Group"].inputs["Diffuse"].default_value,
-    "principledCol": lambda n: n["Principled BSDF"]
-    .inputs["Base Color"]
-    .default_value,
-    "xnalaraCol": lambda n: n["Principled BSDF"]
-    .inputs["Base Color"]
-    .default_value,
+    "mmdCol": lambda n: _node_input_value(
+        n, MMD_SHADER_NODE, "Diffuse Color"
+    ),
+    "mtoonCol": lambda n: find_node(
+        n, "Mtoon1PbrMetallicRoughness.BaseColorFactor"
+    ).color,
+    "vrm": lambda n: _node_output_value(n, "RGB", "Color"),
+    "vrmCol": lambda n: find_node(n, "Group").inputs[10].default_value,
+    "diffuseCol": lambda n: _node_input_value(n, "Diffuse BSDF", "Color"),
+    "xnalaraNewCol": lambda n: _node_input_value(n, "Group", "Diffuse"),
+    "principledCol": lambda n: _node_input_value(
+        n, "Principled BSDF", "Base Color"
+    ),
+    "xnalaraCol": lambda n: _node_input_value(
+        n, "Principled BSDF", "Base Color"
+    ),
 }
 
 # Graphics texture input names by texture type for modern shaders
@@ -181,17 +202,19 @@ def get_shader_type(mat: bpy.types.Material) -> Optional[str]:  # noqa: PLR0911
         return shader_type
 
     # Try specific shader detection
-    node_names = set(nodes.keys())
+    if node_exists(nodes, MMD_SHADER_NODE):
+        return "mmd" if node_exists(nodes, MMD_TEXTURE_NODE) else "mmdCol"
 
-    if {MMD_SHADER_NODE} & node_names:
-        return "mmd" if {MMD_TEXTURE_NODE} & node_names else "mmdCol"
-
-    if {MTOON_SHADER_NODE} & node_names:
-        return "mtoon" if {MTOON_TEXTURE_NODE} & node_names else "mtoonCol"
+    if node_exists(nodes, MTOON_SHADER_NODE):
+        return (
+            "mtoon"
+            if node_exists(nodes, MTOON_TEXTURE_NODE)
+            else "mtoonCol"
+        )
 
     # Pattern-based detection as last resort
     for shader_type, required_nodes in SHADER_TYPES.items():
-        if required_nodes <= node_names:
+        if all(node_exists(nodes, node_name) for node_name in required_nodes):
             return shader_type
 
     return None
@@ -341,10 +364,10 @@ def get_gfx_textures(
         if not input_name:
             continue
 
-        if input_name not in shader_node.inputs:
+        socket = get_input(shader_node, input_name)
+        if socket is None:
             continue
 
-        socket = shader_node.inputs[input_name]
         image_node = _check_socket_for_image(socket)
         if image_node and image_node.image:
             packed_file = get_packed_file(image_node.image)
@@ -417,8 +440,15 @@ def _find_output_node(
             return node
 
     # Fallback to name-based search
+    localized_output = find_node(nodes, "Material Output")
+    if localized_output:
+        return localized_output
+
     for node in nodes:
-        if "output" in node.name.lower():
+        if matches_socket_name(
+            getattr(node, "name", ""),
+            ["output", "输出"],
+        ):
             return node
 
     return None
@@ -568,15 +598,17 @@ def _find_connected_image_node(
         priority_input = SHADER_ALBEDO_INPUTS[shader_type]
 
     # Check priority input first
-    if priority_input and priority_input in shader_node.inputs:
-        result = _check_socket_for_image(shader_node.inputs[priority_input])
+    priority_socket = get_input(shader_node, priority_input) if priority_input else None
+    if priority_socket:
+        result = _check_socket_for_image(priority_socket)
         if result:
             return result
 
     # Check common color inputs as fallback
     for input_name in COLOR_INPUT_NAMES:
-        if input_name in shader_node.inputs:
-            result = _check_socket_for_image(shader_node.inputs[input_name])
+        input_socket = get_input(shader_node, input_name)
+        if input_socket:
+            result = _check_socket_for_image(input_socket)
             if result:
                 return result
 
@@ -686,16 +718,22 @@ def _find_image_from_specific_nodes(
     nodes = node_tree.nodes
 
     # Check MMD texture
-    if MMD_TEXTURE_NODE in nodes:
-        node = nodes[MMD_TEXTURE_NODE]
-        if hasattr(node, "image") and _is_connected_to_output(node, node_tree):
-            return node.image
+    node = find_node(nodes, MMD_TEXTURE_NODE)
+    if (
+        node is not None
+        and hasattr(node, "image")
+        and _is_connected_to_output(node, node_tree)
+    ):
+        return node.image
 
     # Check MToon texture
-    if MTOON_TEXTURE_NODE in nodes:
-        node = nodes[MTOON_TEXTURE_NODE]
-        if hasattr(node, "image") and _is_connected_to_output(node, node_tree):
-            return node.image
+    node = find_node(nodes, MTOON_TEXTURE_NODE)
+    if (
+        node is not None
+        and hasattr(node, "image")
+        and _is_connected_to_output(node, node_tree)
+    ):
+        return node.image
 
     return None
 
@@ -728,8 +766,14 @@ def _find_color_connected_image(
         # Check color inputs
         for socket in node.inputs:
             if any(
-                term in socket.name.lower()
-                for term in ["color", "diffuse", "base"]
+                matches_socket_name(
+                    value,
+                    ["color", "diffuse", "base", "颜色", "漫射", "基础"],
+                )
+                for value in (
+                    getattr(socket, "name", ""),
+                    getattr(socket, "identifier", ""),
+                )
             ):
                 if not socket.links:
                     continue
@@ -766,11 +810,12 @@ def _find_image_from_shader_type(
     node_name = SHADER_IMAGE_NODES[shader_type]
     node_tree = mat.node_tree
 
-    if node_name not in node_tree.nodes:
-        return None
-
-    node = node_tree.nodes[node_name]
-    if hasattr(node, "image") and _is_connected_to_output(node, node_tree):
+    node = find_node(node_tree.nodes, node_name)
+    if (
+        node is not None
+        and hasattr(node, "image")
+        and _is_connected_to_output(node, node_tree)
+    ):
         return node.image
 
     return None
@@ -785,10 +830,10 @@ def _detect_group_shader(nodes: bpy.types.bpy_prop_collection) -> Optional[str]:
     Returns:
         Shader type identifier or None.
     """
-    if "Group" not in nodes:
+    group_node = find_node(nodes, "Group")
+    if group_node is None:
         return None
 
-    group_node = nodes["Group"]
     if not hasattr(group_node, "node_tree") or not group_node.node_tree:
         return None
 
@@ -797,8 +842,8 @@ def _detect_group_shader(nodes: bpy.types.bpy_prop_collection) -> Optional[str]:
     if tree_name == "Group":
         return "xnalaraNewCol"
     elif tree_name == "MToon_unversioned":
-        return "vrm" if "Image Texture" in nodes else "vrmCol"
-    elif tree_name == "XPS Shader" and "Image Texture" in nodes:
+        return "vrm" if node_exists(nodes, "Image Texture") else "vrmCol"
+    elif tree_name == "XPS Shader" and node_exists(nodes, "Image Texture"):
         return "xnalara"
 
     return None
@@ -824,8 +869,9 @@ def _extract_shader_color(
     }
 
     input_name = input_map.get(shader_type)
-    if input_name and input_name in shader_node.inputs:
-        return _rgb_to_srgb255(shader_node.inputs[input_name].default_value)
+    socket = get_input(shader_node, input_name) if input_name else None
+    if socket:
+        return _rgb_to_srgb255(socket.default_value)
 
     return None
 

@@ -50,6 +50,7 @@ from ...utils.materials import (
     get_image_from_material,
     sort_materials,
 )
+from ...utils.node_compat import find_node, get_input, get_output
 from ...utils.objects import align_uv, get_polys, get_uv
 from ...utils.textures import get_texture
 
@@ -946,7 +947,9 @@ def _configure_material_multi(  # noqa: PLR0915
     mat.use_nodes = True
 
     node_tree = mat.node_tree
-    node_bsdf = node_tree.nodes["Principled BSDF"]
+    node_bsdf = find_node(node_tree.nodes, "Principled BSDF")
+    if node_bsdf is None:
+        node_bsdf = node_tree.nodes.new(type="ShaderNodeBsdfPrincipled")
 
     # Position offset for texture nodes
     x_offset = -600
@@ -961,10 +964,12 @@ def _configure_material_multi(  # noqa: PLR0915
         node_albedo.location = x_offset, y_offset
 
         node_tree.links.new(
-            node_albedo.outputs["Color"], node_bsdf.inputs["Base Color"]
+            get_output(node_albedo, "Color"),
+            get_input(node_bsdf, "Base Color"),
         )
         node_tree.links.new(
-            node_albedo.outputs["Alpha"], node_bsdf.inputs["Alpha"]
+            get_output(node_albedo, "Alpha"),
+            get_input(node_bsdf, "Alpha"),
         )
 
     # Configure metallic texture if exists
@@ -976,7 +981,8 @@ def _configure_material_multi(  # noqa: PLR0915
         node_metallic.image.colorspace_settings.name = "Non-Color"
 
         node_tree.links.new(
-            node_metallic.outputs["Color"], node_bsdf.inputs["Metallic"]
+            get_output(node_metallic, "Color"),
+            get_input(node_bsdf, "Metallic"),
         )
 
     # Configure roughness texture if exists
@@ -988,7 +994,8 @@ def _configure_material_multi(  # noqa: PLR0915
         node_roughness.image.colorspace_settings.name = "Non-Color"
 
         node_tree.links.new(
-            node_roughness.outputs["Color"], node_bsdf.inputs["Roughness"]
+            get_output(node_roughness, "Color"),
+            get_input(node_bsdf, "Roughness"),
         )
 
     # Configure specular texture if exists
@@ -1000,7 +1007,8 @@ def _configure_material_multi(  # noqa: PLR0915
         node_specular.image.colorspace_settings.name = "Non-Color"
 
         node_tree.links.new(
-            node_specular.outputs["Color"], node_bsdf.inputs["Specular Tint"]
+            get_output(node_specular, "Color"),
+            get_input(node_bsdf, "Specular Tint"),
         )
 
     # Configure emission texture if exists
@@ -1011,10 +1019,13 @@ def _configure_material_multi(  # noqa: PLR0915
         node_emission.location = x_offset, y_offset - y_spacing * 4
 
         node_tree.links.new(
-            node_emission.outputs["Color"], node_bsdf.inputs["Emission Color"]
+            get_output(node_emission, "Color"),
+            get_input(node_bsdf, "Emission Color"),
         )
 
-        node_bsdf.inputs["Emission Strength"].default_value = 1.0
+        emission_strength = get_input(node_bsdf, "Emission Strength")
+        if emission_strength:
+            emission_strength.default_value = 1.0
 
     # Configure normal map if exists
     if "normal_map" in textures:
@@ -1029,10 +1040,12 @@ def _configure_material_multi(  # noqa: PLR0915
         node_normal_map.location = x_offset, y_offset - y_spacing * 5
 
         node_tree.links.new(
-            node_normal_tex.outputs["Color"], node_normal_map.inputs["Color"]
+            get_output(node_normal_tex, "Color"),
+            get_input(node_normal_map, "Color"),
         )
         node_tree.links.new(
-            node_normal_map.outputs["Normal"], node_bsdf.inputs["Normal"]
+            get_output(node_normal_map, "Normal"),
+            get_input(node_bsdf, "Normal"),
         )
 
 

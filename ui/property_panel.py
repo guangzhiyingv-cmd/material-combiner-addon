@@ -15,6 +15,7 @@ from ..utils.materials import (
     get_image_from_material,
     get_shader_type,
 )
+from ..utils.node_compat import find_node, get_input, get_output
 
 DIALOG_WIDTH_FACTOR = 4
 MAX_MATERIAL_NAME_LENGTH = 16
@@ -234,11 +235,18 @@ class PropertyMenu(bpy.types.Operator):
             return
 
         nodes = mat.node_tree.nodes
+        mmd_shader = find_node(nodes, "mmd_shader")
+        mtoon_color = find_node(
+            nodes, "Mtoon1PbrMetallicRoughness.BaseColorFactor"
+        )
+        rgb_node = find_node(nodes, "RGB")
+        group_node = find_node(nodes, "Group")
+        principled_node = find_node(nodes, "Principled BSDF")
 
         # For MMD materials
-        if shader in ["mmd", "mmdCol"] and "mmd_shader" in nodes:
+        if shader in ["mmd", "mmdCol"] and mmd_shader is not None:
             layout.prop(
-                nodes["mmd_shader"].inputs["Diffuse Color"],
+                get_input(mmd_shader, "Diffuse Color"),
                 "default_value",
                 text="",
             )
@@ -246,31 +254,35 @@ class PropertyMenu(bpy.types.Operator):
         # For MToon materials
         elif (
             shader in ["mtoon", "mtoonCol"]
-            and "Mtoon1PbrMetallicRoughness.BaseColorFactor" in nodes
+            and mtoon_color is not None
         ):
             layout.prop(
-                nodes["Mtoon1PbrMetallicRoughness.BaseColorFactor"],
+                mtoon_color,
                 "color",
                 text="",
             )
 
         # For VRM materials
-        elif shader in ["vrm", "vrmCol"] and "RGB" in nodes:
-            layout.prop(nodes["RGB"].outputs[0], "default_value", text="")
+        elif shader in ["vrm", "vrmCol"] and rgb_node is not None:
+            layout.prop(
+                get_output(rgb_node, "Color") or rgb_node.outputs[0],
+                "default_value",
+                text="",
+            )
 
         # For XNALara New materials
-        elif shader == "xnalaraNewCol" and "Group" in nodes:
+        elif shader == "xnalaraNewCol" and group_node is not None:
             layout.prop(
-                nodes["Group"].inputs["Diffuse"], "default_value", text=""
+                get_input(group_node, "Diffuse"), "default_value", text=""
             )
 
         # For Principled BSDF and XNALara materials
         elif (
             shader in ["principled", "principledCol", "xnalara", "xnalaraCol"]
-            and "Principled BSDF" in nodes
+            and principled_node is not None
         ):
             layout.prop(
-                nodes["Principled BSDF"].inputs["Base Color"],
+                get_input(principled_node, "Base Color"),
                 "default_value",
                 text="",
             )
